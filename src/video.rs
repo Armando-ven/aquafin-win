@@ -39,11 +39,19 @@ fn connect_ipc(pipe_path: &Path) -> std::io::Result<std::fs::File> {
 /// Why a video failed to start.
 #[derive(Debug, thiserror::Error)]
 pub enum VideoError {
-    #[error("mpv is not installed or not on PATH. Install mpv to play video.")]
-    MpvNotInstalled,
+    #[error("no video player available: install mpv, or ensure xdg-open is on PATH.")]
+    NoPlayerFound,
 
-    #[error("failed to launch mpv: {0}")]
+    #[error("failed to launch video player: {0}")]
     Spawn(#[source] std::io::Error),
+}
+
+/// What `spawn` actually started. mpv gives us IPC (pause, seek, position);
+/// the external fallback is fire-and-forget — once the system handler takes
+/// over, we can't observe or control it.
+pub enum SpawnedPlayer {
+    Mpv(VideoSession),
+    External,
 }
 
 /// A live mpv process plus the path to its IPC socket.
@@ -124,9 +132,18 @@ impl Drop for VideoSession {
     }
 }
 
-/// Launch mpv on `stream_url`, returning the session once the process is spawned.
-/// mpv opens its own window; we never block the UI thread on it.
-pub fn spawn(stream_url: &str, item_id: &str, title: &str) -> Result<VideoSession, VideoError> {
+/// Launch a video player on `stream_url`. Prefers mpv (full IPC: pause, seek,
+/// position polling); falls back to the system default opener (`xdg-open`),
+/// which is fire-and-forget — no IPC, no progress reporting.
+pub fn spawn(stream_url: &str, item_id: &str, title: &str) -> Result<SpawnedPlayer, VideoError> {
+    match spawn_mpv(stream_url, item_id, title) {
+        Ok(session) => Ok(SpawnedPlayer::Mpv(session)),
+        Err(VideoError::NoPlayerFound) => spawn_external(stream_url).map(|()| SpawnedPlayer::External),
+        Err(e) => Err(e),
+    }
+}
+
+fn spawn_mpv(stream_url: &str, item_id: &str, title: &str) -> Result<VideoSession, VideoError> {
     let socket_path = socket_path_for(item_id);
 
     let child = Command::new("mpv")
@@ -142,7 +159,7 @@ pub fn spawn(stream_url: &str, item_id: &str, title: &str) -> Result<VideoSessio
         .stderr(Stdio::null())
         .spawn()
         .map_err(|e| match e.kind() {
-            std::io::ErrorKind::NotFound => VideoError::MpvNotInstalled,
+            std::io::ErrorKind::NotFound => VideoError::NoPlayerFound,
             _ => VideoError::Spawn(e),
         })?;
 
@@ -152,6 +169,22 @@ pub fn spawn(stream_url: &str, item_id: &str, title: &str) -> Result<VideoSessio
         socket_path,
         child,
     })
+}
+
+/// Hand the URL to the system default opener. `xdg-open` exits as soon as it
+/// dispatches to the registered handler; we don't track the resulting player.
+fn spawn_external(stream_url: &str) -> Result<(), VideoError> {
+    Command::new("xdg-open")
+        .arg(stream_url)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => VideoError::NoPlayerFound,
+            _ => VideoError::Spawn(e),
+        })
 }
 
 /// A per-session IPC endpoint. On Unix it lives under the system temp dir as a

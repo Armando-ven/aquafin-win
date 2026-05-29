@@ -19,7 +19,7 @@ use crate::api::JellyfinClient;
 use crate::audio::{
     AudioEngine, AudioMonitor, TrackMeta, SUPPORTED_AUDIO_CODECS, SUPPORTED_CONTAINERS,
 };
-use crate::video::{self, VideoError, VideoSession};
+use crate::video::{self, SpawnedPlayer, VideoError, VideoSession};
 
 use super::app::{App, Intent, Item, MediaKind, NowPlaying};
 
@@ -256,7 +256,7 @@ impl Playback {
         self.stop_audio(); // don't stack in-app audio under a video
         let url = self.client.video_stream_url(&item.id);
         match video::spawn(&url, &item.id, &item.name) {
-            Ok(session) => {
+            Ok(SpawnedPlayer::Mpv(session)) => {
                 if let Some(mut previous) = self.video.take() {
                     previous.stop.store(true, Ordering::SeqCst);
                     previous.session.kill();
@@ -277,10 +277,25 @@ impl Playback {
                     position_ms,
                 });
             }
-            Err(VideoError::MpvNotInstalled) => {
-                app.show_error("mpv is not installed or not on PATH. Install mpv to play video.");
+            Ok(SpawnedPlayer::External) => {
+                // Fire-and-forget through xdg-open: no IPC, so no pause/seek,
+                // no position polling, and no playback reporting. Tell the user
+                // mpv would give them more, and drop any previous mpv session.
+                if let Some(mut previous) = self.video.take() {
+                    previous.stop.store(true, Ordering::SeqCst);
+                    previous.session.kill();
+                }
+                app.set_status(format!(
+                    "Opened in default player: {} (install mpv for pause/seek/progress)",
+                    item.name
+                ));
             }
-            Err(e) => app.show_error(format!("Couldn't start mpv: {e}")),
+            Err(VideoError::NoPlayerFound) => {
+                app.show_error(
+                    "No video player available. Install mpv, or ensure xdg-open is on PATH.",
+                );
+            }
+            Err(e) => app.show_error(format!("Couldn't start video player: {e}")),
         }
     }
 
