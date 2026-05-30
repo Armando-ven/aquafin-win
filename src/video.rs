@@ -39,7 +39,7 @@ fn connect_ipc(pipe_path: &Path) -> std::io::Result<std::fs::File> {
 /// Why a video failed to start.
 #[derive(Debug, thiserror::Error)]
 pub enum VideoError {
-    #[error("no video player available: install mpv, or ensure a system opener (xdg-open / open / cmd start) is on PATH.")]
+    #[error("no video player available: install mpv or vlc, or ensure a system opener (xdg-open / open / cmd start) is on PATH.")]
     NoPlayerFound,
 
     #[error("failed to launch video player: {0}")]
@@ -132,15 +132,65 @@ impl Drop for VideoSession {
     }
 }
 
-/// Launch a video player on `stream_url`. Prefers mpv (full IPC: pause, seek,
-/// position polling); falls back to the system default opener (`xdg-open`),
-/// which is fire-and-forget — no IPC, no progress reporting.
+/// Launch a video player on `stream_url`. Tries, in order:
+/// 1. mpv (full IPC: pause, seek, position polling),
+/// 2. VLC (fire-and-forget — opens an actual media window, no IPC),
+/// 3. the system default opener (last resort: `xdg-open` / `open` / `start`).
 pub fn spawn(stream_url: &str, item_id: &str, title: &str) -> Result<SpawnedPlayer, VideoError> {
     match spawn_mpv(stream_url, item_id, title) {
-        Ok(session) => Ok(SpawnedPlayer::Mpv(session)),
-        Err(VideoError::NoPlayerFound) => spawn_external(stream_url).map(|()| SpawnedPlayer::External),
-        Err(e) => Err(e),
+        Ok(session) => return Ok(SpawnedPlayer::Mpv(session)),
+        Err(VideoError::NoPlayerFound) => {}
+        Err(e) => return Err(e),
     }
+    match spawn_vlc(stream_url, title) {
+        Ok(()) => return Ok(SpawnedPlayer::External),
+        Err(VideoError::NoPlayerFound) => {}
+        Err(e) => return Err(e),
+    }
+    spawn_external(stream_url).map(|()| SpawnedPlayer::External)
+}
+
+/// Try `vlc` on PATH, then well-known Windows install locations. VLC plays
+/// network URLs natively; we don't wire its RC interface, so this stays
+/// fire-and-forget.
+fn spawn_vlc(stream_url: &str, title: &str) -> Result<(), VideoError> {
+    let candidates: &[&str] = {
+        #[cfg(target_os = "windows")]
+        {
+            &[
+                "vlc",
+                r"C:\Program Files\VideoLAN\VLC\vlc.exe",
+                r"C:\Program Files (x86)\VideoLAN\VLC\vlc.exe",
+            ]
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            &["vlc"]
+        }
+    };
+
+    let meta_title = format!(":meta-title={title}");
+    let mut last_err: Option<std::io::Error> = None;
+    for exe in candidates {
+        let result = Command::new(exe)
+            .arg(stream_url)
+            .arg(&meta_title)
+            .arg("--play-and-exit")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+        match result {
+            Ok(_) => return Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                last_err = Some(e);
+                continue;
+            }
+            Err(e) => return Err(VideoError::Spawn(e)),
+        }
+    }
+    let _ = last_err;
+    Err(VideoError::NoPlayerFound)
 }
 
 fn spawn_mpv(stream_url: &str, item_id: &str, title: &str) -> Result<VideoSession, VideoError> {

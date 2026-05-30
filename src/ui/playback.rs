@@ -278,21 +278,21 @@ impl Playback {
                 });
             }
             Ok(SpawnedPlayer::External) => {
-                // Fire-and-forget through xdg-open: no IPC, so no pause/seek,
-                // no position polling, and no playback reporting. Tell the user
-                // mpv would give them more, and drop any previous mpv session.
+                // Fallback (VLC or system opener): no IPC, so no pause/seek,
+                // no position polling, no playback reporting. Drop any previous
+                // mpv session and tell the user mpv would give them more.
                 if let Some(mut previous) = self.video.take() {
                     previous.stop.store(true, Ordering::SeqCst);
                     previous.session.kill();
                 }
                 app.set_status(format!(
-                    "Opened in default player: {} (install mpv for pause/seek/progress)",
+                    "Opened externally: {} (install mpv for pause/seek/progress)",
                     item.name
                 ));
             }
             Err(VideoError::NoPlayerFound) => {
                 app.show_error(
-                    "No video player available. Install mpv, or ensure a system opener is on PATH.",
+                    "No video player available. Install mpv or vlc, or ensure a system opener is on PATH.",
                 );
             }
             Err(e) => app.show_error(format!("Couldn't start video player: {e}")),
