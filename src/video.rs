@@ -39,7 +39,7 @@ fn connect_ipc(pipe_path: &Path) -> std::io::Result<std::fs::File> {
 /// Why a video failed to start.
 #[derive(Debug, thiserror::Error)]
 pub enum VideoError {
-    #[error("no video player available: install mpv, or ensure xdg-open is on PATH.")]
+    #[error("no video player available: install mpv, or ensure a system opener (xdg-open / open / cmd start) is on PATH.")]
     NoPlayerFound,
 
     #[error("failed to launch video player: {0}")]
@@ -171,12 +171,32 @@ fn spawn_mpv(stream_url: &str, item_id: &str, title: &str) -> Result<VideoSessio
     })
 }
 
-/// Hand the URL to the system default opener. `xdg-open` exits as soon as it
+/// Hand the URL to the system default opener. The opener exits as soon as it
 /// dispatches to the registered handler; we don't track the resulting player.
+/// Linux/BSD: `xdg-open`. macOS: `open`. Windows: `cmd /C start "" <url>`
+/// (empty title arg is required because `start` treats the first quoted token
+/// as a window title).
 fn spawn_external(stream_url: &str) -> Result<(), VideoError> {
-    Command::new("xdg-open")
-        .arg(stream_url)
-        .stdin(Stdio::null())
+    #[cfg(target_os = "windows")]
+    let mut cmd = {
+        let mut c = Command::new("cmd");
+        c.args(["/C", "start", "", stream_url]);
+        c
+    };
+    #[cfg(target_os = "macos")]
+    let mut cmd = {
+        let mut c = Command::new("open");
+        c.arg(stream_url);
+        c
+    };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut cmd = {
+        let mut c = Command::new("xdg-open");
+        c.arg(stream_url);
+        c
+    };
+
+    cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()

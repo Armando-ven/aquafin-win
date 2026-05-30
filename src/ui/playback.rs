@@ -292,7 +292,7 @@ impl Playback {
             }
             Err(VideoError::NoPlayerFound) => {
                 app.show_error(
-                    "No video player available. Install mpv, or ensure xdg-open is on PATH.",
+                    "No video player available. Install mpv, or ensure a system opener is on PATH.",
                 );
             }
             Err(e) => app.show_error(format!("Couldn't start video player: {e}")),
